@@ -4459,6 +4459,19 @@ def _housekeeping_checkpoint_prune() -> None:
     auto_prune_from_config()
 
 
+def _housekeeping_scratch_prune() -> None:
+    """Idle scratch entries on a live timer.
+
+    ``get_scratch_dir``'s own gate fires at most once per process, so a gateway that stays up for
+    days prunes on whichever call comes first and never again -- and that first call prunes
+    nothing when it lands inside the hour the previous pass stamped, which is exactly what a
+    restart minutes after a prune does. This chore re-asks the stamped hour every tick instead of
+    once per process; the check is one ``stat`` and the scan itself goes to a detached child.
+    """
+    from hermes_constants import prune_scratch_dir_if_due
+    prune_scratch_dir_if_due()
+
+
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
@@ -4533,7 +4546,11 @@ def _start_gateway_housekeeping(
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
-        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
+        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune),
+        # Cheap next to the line above (one ``stat``; the scan is a detached child) but first
+        # among equals is not worth reordering -- a long-lived process needs its own cadence
+        # because the gate inside ``get_scratch_dir`` fires once per process, not per hour.
+        (1, "Scratch prune tick", _housekeeping_scratch_prune)]
 
     # Between ticks the queue file is watched so a worker's send goes out when it is queued,
     # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.
