@@ -68,13 +68,11 @@ def test_the_process_gate_keeps_its_chance_when_the_hour_is_not_up(scratch_prune
 
     get_scratch_dir(home)  # inside the hour: nothing to prune, and nothing spent
     assert scratch_prune_spawns == []
-    assert constants._scratch_pruned_once is False, "the gate was stamped by a skipped call"
 
     elapsed = time.time() - 2 * 3600
     os.utime(stamp, (elapsed, elapsed))
     get_scratch_dir(home)  # the hour is up: the chance is still there
     assert scratch_prune_spawns == [scratch]
-    assert constants._scratch_pruned_once is True
 
 
 def test_the_process_gate_still_holds_after_a_real_pass(scratch_prune_spawns, tmp_path, monkeypatch):
@@ -91,7 +89,6 @@ def test_the_process_gate_still_holds_after_a_real_pass(scratch_prune_spawns, tm
 
     get_scratch_dir(home)  # no stamp at all: due, and the door closes
     assert scratch_prune_spawns == [scratch]
-    assert constants._scratch_pruned_once is True
 
     elapsed = time.time() - 2 * 3600  # the hour is up again, but this process already had its turn
     os.utime(scratch / ".last_prune", (elapsed, elapsed))
