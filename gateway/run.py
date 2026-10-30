@@ -4338,13 +4338,6 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
             fut.result(timeout=30)
 
 
-def _housekeeping_paste_sweep() -> None:
-    from hermes_cli.debug import _sweep_expired_pastes
-    deleted, remaining = _sweep_expired_pastes()
-    if deleted:
-        logger.info("Paste sweep: deleted %d expired paste(s), %d pending", deleted, remaining)
-
-
 def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
     """External cron providers only: fire jobs whose time passed with no external fire delivered (dead
     loopback hop). No-op for the built-in ticker; enforces misfire_grace_minutes; CAS claim de-dupes."""
@@ -4451,6 +4444,14 @@ def _housekeeping_memory_trim() -> None:
     trim_memory(reason="messaging gateway housekeeping")
 
 
+def _housekeeping_checkpoint_prune() -> None:
+    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
+    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
+    ``git gc`` can block for tens of seconds on a large store."""
+    from tools.checkpoint_maintenance import auto_prune_from_config
+    auto_prune_from_config()
+
+
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
@@ -4486,7 +4487,7 @@ def _start_gateway_housekeeping(
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     from gateway.run_housekeeping_disk import (
-        housekeeping_checkpoint_prune, housekeeping_media_caches,
+        housekeeping_media_caches, housekeeping_paste_sweep,
         housekeeping_scratch_prune, maybe_post_auto_prune_prompt)
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
@@ -4501,7 +4502,7 @@ def _start_gateway_housekeeping(
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", housekeeping_media_caches),
-        (60, "Paste sweep", _housekeeping_paste_sweep)]
+        (60, "Paste sweep", housekeeping_paste_sweep)]
     # Low disk + auto-prune undecided: ask on the home channel (two syscalls; snoozed per post).
     chores.append((1, "Auto-prune low-disk prompt", lambda: maybe_post_auto_prune_prompt(runner, loop)))
     if cron_provider is not None:
@@ -4526,12 +4527,12 @@ def _start_gateway_housekeeping(
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
+        # One ``stat``, then a detached child: cheap enough for every tick, and the stamp -- not the
+        # tick count -- owns the hourly cadence. Per served profile: an unscoped tick resolves its
+        # root through ``get_hermes_home()``, which is the LAUNCH home on this bare thread.
+        (1, "Scratch prune tick", profile_scoped_chore(runner, housekeeping_scratch_prune)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
-        (1, "Checkpoint prune tick", housekeeping_checkpoint_prune),
-        # Cheap next to the line above (one ``stat``; the scan is a detached child) but first
-        # among equals is not worth reordering -- a long-lived process needs its own cadence
-        # because the gate inside ``get_scratch_dir`` fires once per process, not per hour.
-        (1, "Scratch prune tick", housekeeping_scratch_prune)]
+        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
 
     # Between ticks the queue file is watched so a worker's send goes out when it is queued,
     # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.

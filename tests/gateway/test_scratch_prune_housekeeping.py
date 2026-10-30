@@ -33,3 +33,44 @@ def test_gateway_housekeeping_reasks_the_scratch_hour(monkeypatch):
     gateway_run._start_gateway_housekeeping(_OneTickStopEvent(), interval=0)
 
     assert calls == [True]
+
+
+def test_multiplexed_scratch_chore_reaches_every_served_profile(tmp_path, monkeypatch):
+    """On a multiplexed gateway the chore must re-ask the hour for each profile's OWN scratch.
+
+    ``prune_scratch_dir_if_due()`` resolves its root through ``get_hermes_home()``, and the
+    housekeeping thread carries no turn, so nothing binds a profile for it: a bare registration
+    pruned the launch profile's scratch on every tick while each named profile's cache grew with
+    no hourly pass at all. The boot-time gate cannot cover a gateway that stays up for days.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import hermes_constants as constants
+
+    fake_home = tmp_path / "home"
+    launch = fake_home / ".hermes"
+    served = launch / "profiles" / "b"
+    for home in (launch, served):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("model:\n  provider: nous\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+
+    # The hermetic conftest pins the state store; restore the sentinel so an argless acquire()
+    # resolves through the profile scope instead of one sandbox path for every profile.
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    # Its ``git gc`` is not what this test is about, and it can block for tens of seconds.
+    from tools import checkpoint_maintenance
+    monkeypatch.setattr(checkpoint_maintenance, "auto_prune_from_config", lambda: None)
+
+    visited: list[str] = []
+    monkeypatch.setattr(
+        constants, "prune_scratch_dir_if_due",
+        lambda *args, **kwargs: visited.append(str(constants.get_hermes_home())))
+
+    runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True))
+    gateway_run._start_gateway_housekeeping(_OneTickStopEvent(), interval=0, runner=runner)
+
+    assert visited == [str(launch), str(served)]

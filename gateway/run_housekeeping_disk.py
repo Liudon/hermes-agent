@@ -43,12 +43,12 @@ def housekeeping_media_caches() -> None:
         _housekeeping_chore(f"{cache_name} cache cleanup", _one)
 
 
-def housekeeping_checkpoint_prune() -> None:
-    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
-    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
-    ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
-    auto_prune_from_config()
+def housekeeping_paste_sweep() -> None:
+    """Sweep paste files past their expiry; the retention rule stays in ``hermes_cli.debug``."""
+    from hermes_cli.debug import _sweep_expired_pastes
+    deleted, remaining = _sweep_expired_pastes()
+    if deleted:
+        logger.info("Paste sweep: deleted %d expired paste(s), %d pending", deleted, remaining)
 
 
 def housekeeping_scratch_prune() -> None:
