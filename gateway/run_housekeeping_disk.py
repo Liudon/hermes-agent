@@ -1,5 +1,6 @@
-"""Gateway housekeeping chores that keep the data disk healthy: stale media-cache cleanup and the
-home-channel prompt for the low-disk auto-prune decision (see ``hermes_cli/prune_advisor.py``).
+"""Gateway housekeeping chores that keep the data disk healthy: stale media-cache, checkpoint-store
+and idle-scratch cleanup, plus the home-channel prompt for the low-disk auto-prune decision (see
+``hermes_cli/prune_advisor.py``).
 
 A headless gateway on a small VPS is where a disk fills up, and its owner may never open the CLI,
 so the question goes to each served profile's home channel; Desktop and Ink TUI viewers of local
@@ -40,6 +41,27 @@ def housekeeping_media_caches() -> None:
             if removed:
                 logger.info("%s cache cleanup: removed %d stale file(s)", name, removed)
         _housekeeping_chore(f"{cache_name} cache cleanup", _one)
+
+
+def housekeeping_checkpoint_prune() -> None:
+    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
+    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
+    ``git gc`` can block for tens of seconds on a large store."""
+    from tools.checkpoint_maintenance import auto_prune_from_config
+    auto_prune_from_config()
+
+
+def housekeeping_scratch_prune() -> None:
+    """Idle scratch entries on a live timer.
+
+    ``get_scratch_dir``'s own gate fires at most once per process, so a gateway that stays up for
+    days prunes on whichever call comes first and never again -- and that first call prunes
+    nothing when it lands inside the hour the previous pass stamped, which is exactly what a
+    restart minutes after a prune does. This chore re-asks the stamped hour every tick instead of
+    once per process; the check is one ``stat`` and the scan itself goes to a detached child.
+    """
+    from hermes_constants import prune_scratch_dir_if_due
+    prune_scratch_dir_if_due()
 
 
 def maybe_post_auto_prune_prompt(runner, loop) -> None:

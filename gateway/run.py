@@ -4451,27 +4451,6 @@ def _housekeeping_memory_trim() -> None:
     trim_memory(reason="messaging gateway housekeeping")
 
 
-def _housekeeping_checkpoint_prune() -> None:
-    """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
-    ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
-    ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
-    auto_prune_from_config()
-
-
-def _housekeeping_scratch_prune() -> None:
-    """Idle scratch entries on a live timer.
-
-    ``get_scratch_dir``'s own gate fires at most once per process, so a gateway that stays up for
-    days prunes on whichever call comes first and never again -- and that first call prunes
-    nothing when it lands inside the hour the previous pass stamped, which is exactly what a
-    restart minutes after a prune does. This chore re-asks the stamped hour every tick instead of
-    once per process; the check is one ``stat`` and the scan itself goes to a detached child.
-    """
-    from hermes_constants import prune_scratch_dir_if_due
-    prune_scratch_dir_if_due()
-
-
 def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters. A credential-less satellite
     profile (no bot of its own) drains through the primary's adapters routed by its own profile routes."""
@@ -4506,7 +4485,9 @@ def _start_gateway_housekeeping(
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
     from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
-    from gateway.run_housekeeping_disk import housekeeping_media_caches, maybe_post_auto_prune_prompt
+    from gateway.run_housekeeping_disk import (
+        housekeeping_checkpoint_prune, housekeeping_media_caches,
+        housekeeping_scratch_prune, maybe_post_auto_prune_prompt)
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4546,11 +4527,11 @@ def _start_gateway_housekeeping(
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
-        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune),
+        (1, "Checkpoint prune tick", housekeeping_checkpoint_prune),
         # Cheap next to the line above (one ``stat``; the scan is a detached child) but first
         # among equals is not worth reordering -- a long-lived process needs its own cadence
         # because the gate inside ``get_scratch_dir`` fires once per process, not per hour.
-        (1, "Scratch prune tick", _housekeeping_scratch_prune)]
+        (1, "Scratch prune tick", housekeeping_scratch_prune)]
 
     # Between ticks the queue file is watched so a worker's send goes out when it is queued,
     # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.
